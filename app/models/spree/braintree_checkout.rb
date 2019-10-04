@@ -1,11 +1,18 @@
+# frozen_string_literal: true
+
 module Spree
   class BraintreeCheckout < ActiveRecord::Base
     scope :in_state, ->(state) { where(state: state) }
     scope :not_in_state, ->(state) { where.not(state: state) }
+    scope :recent_with_paypal, lambda {
+                                 where(created_at: 4.days.ago..Time.now,
+                                       state: 'settled')
+                                   .where.not(paypal_email: nil)
+                               }
 
     after_commit :update_payment_and_order
 
-    FINAL_STATES = %w(authorization_expired processor_declined gateway_rejected failed voided settled settlement_declined refunded released).freeze
+    FINAL_STATES = %w[authorization_expired processor_declined gateway_rejected failed voided settled settlement_declined refunded released].freeze
 
     has_one :payment, foreign_key: :source_id, as: :source, class_name: 'Spree::Payment'
     has_one :order, through: :payment
@@ -38,7 +45,25 @@ module Spree
           result[:unchanged] += 1
         end
       end
+      complete_failed_but_settled_orders(recent_with_paypal)
       result
+    end
+
+    # When using Paypal, some orders take too long to authorize and fail
+    # settlement on our end when we retry, this part of the job checks
+    # for the recent checkouts to complete them on Spree if they are in this state.
+    def complete_failed_but_settled_orders(recent_checkouts)
+      recent_checkouts.each do |checkout|
+        next unless checkout&.payment&.state == 'failed' && checkout.state == 'settled'
+
+        order_payment = checkout.order.payments.find_by(state: 'failed')
+        order_payment.state = 'pending'
+        order_payment.save!
+        if checkout.order.total == checkout.payment.amount
+          order_payment.state = 'completed'
+          order_payment.save!
+        end
+      end
     end
 
     def update_state
@@ -47,20 +72,22 @@ module Spree
       status
     end
 
+    def settled?; end
+
     def actions
-      %w(void settle credit)
+      %w[void settle credit]
     end
 
     def can_void?(_payment)
-      %w(authorized submitted_for_settlement).include? state
+      %w[authorized submitted_for_settlement].include? state
     end
 
     def can_settle?(_)
-      %w(authorized).include? state
+      %w[authorized].include? state
     end
 
     def can_credit?(_payment)
-      %w(settled settling).include? state
+      %w[settled settling].include? state
     end
 
     private
@@ -77,6 +104,7 @@ module Spree
 
     def self.braintree_card_type_to_spree(type)
       return '' unless type
+
       case type
       when 'AmericanExpress'
         'american_express'
