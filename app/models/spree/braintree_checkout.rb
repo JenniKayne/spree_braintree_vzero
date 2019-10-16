@@ -9,6 +9,7 @@ module Spree
                                        state: 'settled')
                                    .where.not(paypal_email: nil)
                                }
+    where(created_at: 2.days.ago..Time.now, state: 'settled').where.not(paypal_email: nil)
 
     after_commit :update_payment_and_order
 
@@ -37,7 +38,7 @@ module Spree
       braintree = Gateway::BraintreeVzeroBase.first.provider
       result = { changed: 0, unchanged: 0 }
       not_in_state(FINAL_STATES).find_each do |checkout|
-        checkout.state = braintree::Transaction.find(checkout.transaction_id).status
+        checkout.state = fetch_braintree_checkout_status
         if checkout.state_changed?
           result[:changed] += 1
           checkout.save
@@ -53,31 +54,36 @@ module Spree
     # this part of the job checks for the recent checkouts to complete them.
     def complete_failed_orders_with_settled_checkout(recent_paypal_checkouts)
       recent_paypal_checkouts.each do |checkout|
-        next unless failed_order_and_settled_checkout?(checkout)
+        next unless checkout.failed_order_and_settled_checkout?
 
         # Confirm the checkout is settled on Braintree.
-        transaction_status = get_braintree_checkout_status(checkout)
+        transaction_status = checkout.fetch_braintree_checkout_status
         order_payment = checkout.order.payments.find_by(state: 'failed')
         order_payment.state = 'pending' if transaction_status == 'settled'
         order_payment.save!
         # Mark complete if all the payment amounts match.
         order_payment.state = 'completed' if [checkout.order.total,
                                               checkout.payment.amount,
-                                              get_braintree_checkout_amount].uniq.length == 1
+                                              checkout.fetch_braintree_checkout_amount].uniq.length == 1
         order_payment.save!
+        checkout.order.sync_order_shipments
       end
     end
 
-    def failed_order_and_settled_checkout?(checkout)
-      checkout&.payment&.state == 'failed' && checkout.state == 'settled'
+    def failed_order_and_settled_checkout?
+      payment&.state == 'failed' && state == 'settled'
     end
 
-    def get_braintree_checkout_status(checkout)
-      Transaction.new(Gateway::BraintreeVzeroBase.first.provider, checkout.transaction_id).status
+    def fetch_braintree_checkout
+      Gateway::BraintreeVzeroBase.first.provider::Transaction.find(transaction_id)
     end
 
-    def get_braintree_checkout_amount(checkout)
-      Transaction.new(Gateway::BraintreeVzeroBase.first.provider, checkout.transaction_id).find(checkout.transaction_id).amount
+    def fetch_braintree_checkout_status
+      fetch_braintree_checkout.status
+    end
+
+    def fetch_braintree_checkout_amount
+      fetch_braintree_checkout.amount
     end
 
     def update_state
