@@ -9,7 +9,6 @@ module Spree
                                        state: 'settled')
                                    .where.not(paypal_email: nil)
                                }
-    where(created_at: 2.days.ago..Time.now, state: 'settled').where.not(paypal_email: nil)
 
     after_commit :update_payment_and_order
 
