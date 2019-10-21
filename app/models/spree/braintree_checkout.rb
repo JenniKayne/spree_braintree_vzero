@@ -9,7 +9,6 @@ module Spree
                                        state: 'settled')
                                    .where.not(paypal_email: nil)
                                }
-
     after_commit :update_payment_and_order
 
     FINAL_STATES = %w[authorization_expired processor_declined gateway_rejected failed voided settled settlement_declined refunded released].freeze
@@ -34,7 +33,6 @@ module Spree
     end
 
     def self.update_states
-      braintree = Gateway::BraintreeVzeroBase.first.provider
       result = { changed: 0, unchanged: 0 }
       not_in_state(FINAL_STATES).find_each do |checkout|
         checkout.state = fetch_braintree_checkout_status
@@ -57,7 +55,7 @@ module Spree
 
         # Confirm the checkout is settled on Braintree.
         transaction_status = checkout.fetch_braintree_checkout_status
-        order_payment = checkout.order.payments.find_by(state: 'failed')
+        order_payment = checkout.order.payments.find_by(response_code: checkout.transaction_id)
         order_payment.state = 'pending' if transaction_status == 'settled'
         order_payment.save!
         # Mark complete if all the payment amounts match.
